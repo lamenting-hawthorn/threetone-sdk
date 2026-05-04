@@ -9,7 +9,10 @@ import {
 } from './retry.js';
 
 export interface ThreetoneClientOptions {
-  /** API key from the Threetone dashboard. Sent as `Authorization: Bearer` and `xi-api-key`. */
+  /**
+   * API key from the Threetone dashboard. Sent as `x-api-key`, `xi-api-key`,
+   * and `Authorization: Bearer` for compatibility with all documented schemes.
+   */
   apiKey: string;
   /** Defaults to https://api.threetone.in. No trailing slash required. */
   baseUrl?: string;
@@ -19,7 +22,10 @@ export interface ThreetoneClientOptions {
   timeoutMs?: number;
   /** Retry policy. */
   retry?: Partial<RetryOptions>;
-  /** Headers merged into every request. Cannot override `Authorization` or `xi-api-key`. */
+  /**
+   * Headers merged into every request. Cannot override `Authorization`,
+   * `x-api-key`, or `xi-api-key`.
+   */
   defaultHeaders?: Record<string, string>;
 }
 
@@ -109,7 +115,11 @@ export class ThreetoneClient {
     for (const [k, v] of Object.entries(this.#defaultHeaders)) {
       if (!h.has(k)) h.set(k, v);
     }
+    // Threetone's docs use `x-api-key`; the OpenAPI spec defines `xi-api-key`
+    // (an ElevenLabs convention). The HTTPBearer scheme is also accepted.
+    // We send all three so any of the three accepted gateways will succeed.
     h.set('Authorization', `Bearer ${this.#apiKey}`);
+    h.set('x-api-key', this.#apiKey);
     h.set('xi-api-key', this.#apiKey);
     if (!h.has('Accept')) h.set('Accept', 'application/json');
     return h;

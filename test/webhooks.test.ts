@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ThreetoneError } from '../src/errors.js';
 import { verifyWebhook } from '../src/webhooks.js';
 
-async function sign(secret: string, signedPayload: string): Promise<string> {
+async function sign(secret: string, payload: string): Promise<string> {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     'raw',
@@ -11,142 +11,174 @@ async function sign(secret: string, signedPayload: string): Promise<string> {
     false,
     ['sign'],
   );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(signedPayload));
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 const secret = 'whsec_test';
 
-describe('verifyWebhook — happy path', () => {
-  it('accepts a valid timestamped signature', async () => {
-    const payload = JSON.stringify({ type: 'call.completed', data: { id: 'c1' } });
-    const t = Math.floor(Date.now() / 1000);
-    const digest = await sign(secret, `${t}.${payload}`);
-    const event = await verifyWebhook({ payload, signature: `t=${t},v1=${digest}`, secret });
-    expect(event.type).toBe('call.completed');
+function fixturePayload(): string {
+  return JSON.stringify({
+    event: 'call_started',
+    timestamp: '2024-01-15T10:30:00Z',
+    data: { call_id: 'call_abc123', phone_number: '+1234567890' },
   });
+}
 
-  it('accepts a bare hex digest only when allowBareHex is true', async () => {
-    const payload = JSON.stringify({ type: 'call.completed', data: {} });
+describe('verifyWebhook — happy path', () => {
+  it('accepts a valid sha256= signature', async () => {
+    const payload = fixturePayload();
     const digest = await sign(secret, payload);
     const event = await verifyWebhook({
       payload,
-      signature: digest,
+      signature: `sha256=${digest}`,
       secret,
-      allowBareHex: true,
     });
-    expect(event.type).toBe('call.completed');
+    expect(event.event).toBe('call_started');
+    expect(event.timestamp).toBe('2024-01-15T10:30:00Z');
+    expect((event.data as { call_id: string }).call_id).toBe('call_abc123');
+  });
+
+  it('accepts uppercase hex digest', async () => {
+    const payload = fixturePayload();
+    const digest = (await sign(secret, payload)).toUpperCase();
+    const event = await verifyWebhook({ payload, signature: `sha256=${digest}`, secret });
+    expect(event.event).toBe('call_started');
+  });
+
+  it('tolerates leading/trailing whitespace in the header', async () => {
+    const payload = fixturePayload();
+    const digest = await sign(secret, payload);
+    const event = await verifyWebhook({
+      payload,
+      signature: `   sha256=${digest}   `,
+      secret,
+    });
+    expect(event.event).toBe('call_started');
   });
 });
 
 describe('verifyWebhook — security', () => {
   it('rejects a tampered payload', async () => {
-    const payload = JSON.stringify({ type: 'call.completed', data: { id: 'c1' } });
-    const t = Math.floor(Date.now() / 1000);
-    const digest = await sign(secret, `${t}.${payload}`);
+    const payload = fixturePayload();
+    const digest = await sign(secret, payload);
     await expect(
       verifyWebhook({
-        payload: payload.replace('c1', 'c2'),
-        signature: `t=${t},v1=${digest}`,
+        payload: payload.replace('call_abc123', 'call_xyz999'),
+        signature: `sha256=${digest}`,
         secret,
       }),
     ).rejects.toBeInstanceOf(ThreetoneError);
   });
 
-  it('rejects an old timestamp', async () => {
-    const payload = JSON.stringify({ type: 'call.completed', data: {} });
-    const t = Math.floor(Date.now() / 1000) - 10_000;
-    const digest = await sign(secret, `${t}.${payload}`);
-    await expect(
-      verifyWebhook({
-        payload,
-        signature: `t=${t},v1=${digest}`,
-        secret,
-        toleranceSec: 300,
-      }),
-    ).rejects.toThrow(/tolerance/);
+  it('rejects a wrong secret', async () => {
+    const payload = fixturePayload();
+    const digest = await sign('different_secret', payload);
+    await expect(verifyWebhook({ payload, signature: `sha256=${digest}`, secret })).rejects.toThrow(
+      /mismatch/,
+    );
   });
 
-  it('rejects bare hex by default (no replay protection)', async () => {
-    const payload = JSON.stringify({ type: 'call.completed', data: {} });
+  it('rejects bare hex (no sha256= prefix)', async () => {
+    const payload = fixturePayload();
     const digest = await sign(secret, payload);
     await expect(verifyWebhook({ payload, signature: digest, secret })).rejects.toThrow(
-      /allowBareHex/,
+      /must start with `sha256=`/,
+    );
+  });
+
+  it('rejects unknown algorithm prefix', async () => {
+    const payload = fixturePayload();
+    const digest = await sign(secret, payload);
+    await expect(verifyWebhook({ payload, signature: `sha1=${digest}`, secret })).rejects.toThrow(
+      /sha256=/,
     );
   });
 });
 
-describe('verifyWebhook — malformed headers', () => {
-  it('rejects header with only v1 and no t', async () => {
-    const payload = '{"type":"x","data":{}}';
-    const digest = await sign(secret, payload);
-    await expect(
-      verifyWebhook({ payload, signature: `v1=${digest},foo=bar`, secret }),
-    ).rejects.toThrow(/must include both/);
-  });
-
-  it('rejects header with t= empty value (downgrade attempt)', async () => {
-    const payload = '{"type":"x","data":{}}';
-    const digest = await sign(secret, payload);
-    await expect(verifyWebhook({ payload, signature: `t=,v1=${digest}`, secret })).rejects.toThrow(
-      /must include both/,
-    );
-  });
-
-  it('rejects non-integer timestamp', async () => {
-    const payload = '{"type":"x","data":{}}';
-    const digest = await sign(secret, payload);
-    await expect(
-      verifyWebhook({ payload, signature: `t=abc,v1=${digest}`, secret }),
-    ).rejects.toThrow(/timestamp/);
-  });
-
+describe('verifyWebhook — malformed signatures', () => {
   it('rejects non-hex digest', async () => {
     await expect(
-      verifyWebhook({ payload: '{}', signature: 't=1,v1=ZZZZ', secret }),
-    ).rejects.toThrow(/hex/);
+      verifyWebhook({
+        payload: '{"event":"x","timestamp":"t","data":{}}',
+        signature: `sha256=${'Z'.repeat(64)}`,
+        secret,
+      }),
+    ).rejects.toThrow(/64 hex/);
   });
 
-  it('rejects wrong-length digest', async () => {
-    await expect(
-      verifyWebhook({ payload: '{}', signature: 't=1,v1=abcd', secret }),
-    ).rejects.toThrow(/64-char/);
-  });
-
-  it('tolerates extra whitespace around keys/values', async () => {
-    const payload = JSON.stringify({ type: 'call.completed', data: {} });
-    const t = Math.floor(Date.now() / 1000);
-    const digest = await sign(secret, `${t}.${payload}`);
-    const event = await verifyWebhook({
-      payload,
-      signature: ` t = ${t} , v1 = ${digest} `,
-      secret,
-    });
-    expect(event.type).toBe('call.completed');
-  });
-});
-
-describe('verifyWebhook — input validation', () => {
-  it('rejects negative toleranceSec', async () => {
+  it('rejects digest of wrong length', async () => {
     await expect(
       verifyWebhook({
-        payload: '{}',
-        signature: `t=1,v1=${'a'.repeat(64)}`,
+        payload: '{"event":"x","timestamp":"t","data":{}}',
+        signature: 'sha256=abcd',
         secret,
-        toleranceSec: -1,
       }),
-    ).rejects.toThrow(/toleranceSec/);
+    ).rejects.toThrow(/64 hex/);
+  });
+
+  it('rejects empty signature', async () => {
+    await expect(
+      verifyWebhook({ payload: fixturePayload(), signature: '', secret }),
+    ).rejects.toThrow(/signature/);
   });
 
   it('rejects empty secret', async () => {
     await expect(
-      verifyWebhook({ payload: '{}', signature: `t=1,v1=${'a'.repeat(64)}`, secret: '' }),
+      verifyWebhook({
+        payload: fixturePayload(),
+        signature: `sha256=${'a'.repeat(64)}`,
+        secret: '',
+      }),
     ).rejects.toThrow(/secret/);
   });
+});
 
-  it('rejects empty signature', async () => {
-    await expect(verifyWebhook({ payload: '{}', signature: '', secret })).rejects.toThrow(
-      /signature/,
+describe('verifyWebhook — payload shape', () => {
+  it('rejects payload without `event` field', async () => {
+    const payload = JSON.stringify({ timestamp: 't', data: {} });
+    const digest = await sign(secret, payload);
+    await expect(verifyWebhook({ payload, signature: `sha256=${digest}`, secret })).rejects.toThrow(
+      /event/,
+    );
+  });
+
+  it('rejects non-string `event` field', async () => {
+    const payload = JSON.stringify({ event: 123, timestamp: 't', data: {} });
+    const digest = await sign(secret, payload);
+    await expect(verifyWebhook({ payload, signature: `sha256=${digest}`, secret })).rejects.toThrow(
+      /event/,
+    );
+  });
+
+  it('rejects non-string `timestamp` field when present', async () => {
+    const payload = JSON.stringify({ event: 'call_started', timestamp: 12345, data: {} });
+    const digest = await sign(secret, payload);
+    await expect(verifyWebhook({ payload, signature: `sha256=${digest}`, secret })).rejects.toThrow(
+      /timestamp/,
+    );
+  });
+
+  it('accepts payload without `timestamp` field (forward-compat)', async () => {
+    const payload = JSON.stringify({ event: 'call_started', data: {} });
+    const digest = await sign(secret, payload);
+    const event = await verifyWebhook({ payload, signature: `sha256=${digest}`, secret });
+    expect(event.event).toBe('call_started');
+  });
+
+  it('rejects payload that is not a JSON object', async () => {
+    const payload = '"just a string"';
+    const digest = await sign(secret, payload);
+    await expect(verifyWebhook({ payload, signature: `sha256=${digest}`, secret })).rejects.toThrow(
+      /object/,
+    );
+  });
+
+  it('rejects malformed JSON', async () => {
+    const payload = '{not json';
+    const digest = await sign(secret, payload);
+    await expect(verifyWebhook({ payload, signature: `sha256=${digest}`, secret })).rejects.toThrow(
+      /JSON/,
     );
   });
 });

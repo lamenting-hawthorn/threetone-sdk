@@ -41,7 +41,7 @@ This SDK gives you:
 1. **Typed access to every endpoint** — generated automatically from the live OpenAPI spec via [Hey API](https://heyapi.dev). Request bodies, query params, and response shapes are all type-checked at compile time.
 2. **A configured `ThreetoneClient`** — handles `Authorization` headers, request timeouts, retry-with-backoff on 429/5xx, and structured error mapping.
 3. **Webhook signature verification** — hand-written using Web Crypto so it works in Node, Cloudflare Workers, Vercel Edge, Deno, Bun, and modern browsers without any Node-only imports.
-4. **One ESM build** — small (~8.5 KB main + ~2.7 KB webhooks), tree-shakeable, no CJS, no transpilation surprises.
+4. **One ESM build** — compact (~12 KB main + ~3 KB webhooks), tree-shakeable, no CJS, no transpilation surprises.
 
 **Out of scope for v1:** real-time WebSocket streaming during a live call. That ships in v2.
 
@@ -89,9 +89,10 @@ console.log(data);
 
 ## Authentication
 
-Threetone accepts the same API key under two header names; this SDK sends both for compatibility:
+Threetone's docs and OpenAPI spec disagree on the header name (`x-api-key` vs `xi-api-key`); the SDK sends every documented variant on every request so any of them succeeds:
 
 - `Authorization: Bearer <key>`
+- `x-api-key: <key>`
 - `xi-api-key: <key>`
 
 Get your key from the Threetone dashboard. Do **not** ship it to the browser — use environment variables on a server or edge runtime.
@@ -229,35 +230,49 @@ export async function POST(req: Request): Promise<Response> {
       secret: process.env.THREETONE_WEBHOOK_SECRET!,
     });
 
-    switch (event.type) {
-      case 'call.completed':
+    switch (event.event) {
+      case 'call_started':
+        // handle new call
+        break;
+      case 'call_ended':
         // handle completion
         break;
-      case 'call.failed':
-        // handle failure
+      case 'escalation_triggered':
+        // route to a human
         break;
     }
     return new Response('ok');
   } catch (err) {
-    // Signature mismatch, expired timestamp, or invalid JSON
+    // Signature mismatch, malformed header, or invalid JSON
     return new Response((err as Error).message, { status: 400 });
   }
 }
 ```
 
-### Supported signature formats
+### Signing scheme
 
-The verifier accepts two formats — same code path, no config:
+Threetone signs every webhook with HMAC-SHA256 over the raw request body and sends the digest in the `X-ThreeTone-Signature` header:
 
-1. **Stripe-style timestamped header:** `t=1700000000,v1=<hex_hmac_sha256>`
-   - HMAC is computed over `"<timestamp>.<payload>"`.
-   - Timestamps older than `toleranceSec` (default 300s / 5 min) are rejected to prevent replay.
-2. **Bare hex digest:** `<hex_hmac_sha256>`
-   - HMAC is computed over the raw payload only.
+```
+X-ThreeTone-Signature: sha256=<hex_hmac_sha256(secret, raw_body)>
+```
 
-Both use **timing-safe equality** so the verifier doesn't leak signature bytes through string-comparison timing.
+`verifyWebhook` enforces this exact format and uses **timing-safe** comparison so signature bytes don't leak through string-comparison timing.
 
-> ⚠️ **Open item:** the exact header name and format Threetone uses are not currently documented in the OpenAPI spec. Confirm with your backend team before going to production. If the format differs, the signing scheme can be adjusted in `src/webhooks.ts` — it's ~30 lines.
+### Event types
+
+The payload uses `event` (not `type`) as the discriminator and includes an ISO 8601 `timestamp` string. Documented event names:
+
+| Category | Event names |
+|---|---|
+| Calls | `call_started`, `call_ended`, `call_transferred` |
+| Agents | `agent_available`, `agent_busy`, `agent_offline` |
+| Conversations | `conversation_started`, `conversation_ended`, `escalation_triggered` |
+| System | `system_error`, `maintenance_scheduled`, `quota_exceeded` |
+
+The `ThreetoneEventName` type accepts these known values with autocomplete plus any `string`, so future events won't break your code.
+
+> **Replay protection note:** the documented signing scheme does not include a signed timestamp, so signature replay cannot be detected by signature alone. If your endpoint is exposed publicly, key an idempotency layer on a payload identifier (e.g. `data.call_id`) to drop duplicates.
 
 ---
 
@@ -419,15 +434,16 @@ THREETONE_API_KEY=sk_... pnpm tsx examples/node-outbound-call.ts
 
 This is the realistic path to v1.0. Tackle in order; later steps build on earlier ones.
 
-### Step 1 — Confirm webhook signing scheme with backend (5 min)
+### Step 1 — End-to-end test webhook verification with a real Threetone webhook (15 min)
 
-The verifier currently assumes Stripe-style headers. Before going to production, confirm:
+The signing scheme is implemented per the [Threetone docs](https://docs.threetone.in/guides/phone-integration/webhooks): `X-ThreeTone-Signature: sha256=<hex>` over the raw body. Confirm by:
 
-- What header name carries the signature? (e.g. `x-threetone-signature`)
-- Is the value `t=...,v1=hex` style, bare hex, or something else?
-- Is a timestamp included in the signed payload?
+1. Configure a webhook in the Threetone dashboard pointing at a tunneled endpoint (ngrok, etc.).
+2. Trigger a real `call_started` event.
+3. Run `verifyWebhook` against the live signature; it should accept.
+4. Tamper with one byte; it should reject.
 
-Update `src/webhooks.ts` to match if it differs. Add a fixture test using a real signed payload from the backend.
+If anything is off, the spec/docs may have drifted — file an issue.
 
 ### Step 2 — Claim the `@threetone` npm scope (10 min)
 

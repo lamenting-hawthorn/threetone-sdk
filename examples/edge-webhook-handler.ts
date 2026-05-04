@@ -14,15 +14,22 @@ export async function POST(req: Request): Promise<Response> {
       secret: process.env.THREETONE_WEBHOOK_SECRET ?? '',
     });
 
-    switch (event.type) {
-      case 'call.completed':
+    switch (event.event) {
+      case 'call_started':
+        // handle new call
+        break;
+      case 'call_ended':
         // handle completion
         break;
-      case 'call.failed':
-        // handle failure
+      case 'call_transferred':
+        break;
+      case 'escalation_triggered':
+        // route to a human agent
+        break;
+      case 'conversation_ended':
         break;
       default:
-        // ignore unknown event types
+        // ignore unknown event names
         break;
     }
     return new Response('ok');

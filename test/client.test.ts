@@ -39,12 +39,13 @@ describe('ThreetoneClient construction', () => {
 });
 
 describe('ThreetoneClient headers', () => {
-  it('sets Authorization, xi-api-key, and Accept', async () => {
+  it('sets Authorization, x-api-key, xi-api-key, and Accept', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true }));
     const c = new ThreetoneClient({ apiKey: 'k_test', fetch: fetchMock });
     await c.request('/v1/voices');
     const headers = fetchMock.mock.calls[0]?.[1].headers as Headers;
     expect(headers.get('authorization')).toBe('Bearer k_test');
+    expect(headers.get('x-api-key')).toBe('k_test');
     expect(headers.get('xi-api-key')).toBe('k_test');
     expect(headers.get('accept')).toBe('application/json');
   });
@@ -54,12 +55,19 @@ describe('ThreetoneClient headers', () => {
     const c = new ThreetoneClient({
       apiKey: 'k',
       fetch: fetchMock,
-      defaultHeaders: { 'x-trace-id': 'abc', authorization: 'Bearer hijack' },
+      defaultHeaders: {
+        'x-trace-id': 'abc',
+        authorization: 'Bearer hijack',
+        'x-api-key': 'hijack',
+        'xi-api-key': 'hijack',
+      },
     });
     await c.request('/v1/voices');
     const headers = fetchMock.mock.calls[0]?.[1].headers as Headers;
     expect(headers.get('x-trace-id')).toBe('abc');
     expect(headers.get('authorization')).toBe('Bearer k');
+    expect(headers.get('x-api-key')).toBe('k');
+    expect(headers.get('xi-api-key')).toBe('k');
   });
 });
 

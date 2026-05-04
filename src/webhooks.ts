@@ -1,60 +1,79 @@
 import { ThreetoneError } from './errors.js';
 
 /**
- * A Threetone webhook event. The `type` discriminator and `data` payload
- * are defined by the platform's `ConvAIWebhooks` schema; consumers should
- * narrow on `type` to access typed `data`.
+ * Documented Threetone webhook event names.
+ *
+ * Source: https://docs.threetone.in/guides/phone-integration/webhooks
+ *
+ * The union is widened with `string & {}` so consumers still get autocomplete
+ * on known names while remaining forward-compatible if Threetone adds events.
  */
-export interface ThreetoneEvent<T = unknown> {
-  type: string;
-  data: T;
-  timestamp?: number;
+export type ThreetoneKnownEventName =
+  | 'call_started'
+  | 'call_ended'
+  | 'call_transferred'
+  | 'agent_available'
+  | 'agent_busy'
+  | 'agent_offline'
+  | 'conversation_started'
+  | 'conversation_ended'
+  | 'escalation_triggered'
+  | 'system_error'
+  | 'maintenance_scheduled'
+  | 'quota_exceeded';
+
+export type ThreetoneEventName = ThreetoneKnownEventName | (string & {});
+
+/**
+ * A Threetone webhook event payload.
+ *
+ * Threetone uses `event` as the discriminator (NOT `type`) and emits an
+ * ISO 8601 string for `timestamp`. Narrow on `event` to access typed `data`.
+ */
+export interface ThreetoneEvent<TData = unknown> {
+  /** Event-name discriminator, e.g. `call_started`. */
+  event: ThreetoneEventName;
+  /** ISO 8601 timestamp of when the event occurred (e.g. `2024-01-15T10:30:00Z`). */
+  timestamp: string;
+  /** Event-specific payload. */
+  data: TData;
 }
 
 export interface VerifyWebhookOptions {
-  /** Raw request body as a string. Read with `await req.text()` *before* JSON parsing. */
+  /** Raw request body as a string. Read with `await req.text()` *before* parsing JSON. */
   payload: string;
   /**
-   * The full value of the Threetone signature header (typically `x-threetone-signature`).
-   * Format: `t=<unix_seconds>,v1=<hex_hmac_sha256>`.
+   * The full value of the `X-ThreeTone-Signature` request header.
+   * Format: `sha256=<hex_hmac_sha256>`.
    */
   signature: string;
   /** Webhook signing secret from the Threetone dashboard. */
   secret: string;
-  /** Maximum allowed clock skew in seconds. Default 300 (5 minutes). Must be ≥ 0 and finite. */
-  toleranceSec?: number;
-  /**
-   * If true, accept signatures that are a bare hex digest (no timestamp).
-   * **Off by default** because bare-hex signatures cannot be replay-protected.
-   */
-  allowBareHex?: boolean;
 }
 
 const HEX_RE = /^[0-9a-f]+$/i;
 const SHA256_HEX_LEN = 64;
+const SIGNATURE_PREFIX = 'sha256=';
 
 /**
  * Verify a Threetone webhook signature and return the parsed event.
  *
+ * Threetone signs webhooks per the documented scheme:
+ *   `X-ThreeTone-Signature: sha256=<hex(hmac_sha256(secret, raw_body))>`
+ *
  * Uses Web Crypto so it runs unchanged on Node 20+, Cloudflare Workers,
  * Vercel Edge, Deno, Bun, and modern browsers.
  *
- * **Security:**
- * - Timing-safe HMAC comparison.
- * - Rejects timestamps outside `toleranceSec` to prevent replay.
- * - Rejects malformed signature headers without falling back to a weaker mode.
- * - Bare-hex signatures (no timestamp) are rejected unless `allowBareHex: true`.
+ * **Replay protection note:** Threetone's documented signing scheme does not
+ * include a signed timestamp, so this verifier cannot detect signature replay
+ * on its own. If your endpoint is exposed publicly, key an idempotency layer
+ * on a payload identifier such as `data.call_id` to drop duplicates.
  *
  * @throws {ThreetoneError} on any validation failure.
  */
 export async function verifyWebhook(options: VerifyWebhookOptions): Promise<ThreetoneEvent> {
   const { payload, signature, secret } = options;
-  const toleranceSec = options.toleranceSec ?? 300;
-  const allowBareHex = options.allowBareHex ?? false;
 
-  if (!Number.isFinite(toleranceSec) || toleranceSec < 0) {
-    throw new ThreetoneError('toleranceSec must be a non-negative finite number');
-  }
   if (typeof secret !== 'string' || secret.length === 0) {
     throw new ThreetoneError('secret is required');
   }
@@ -65,82 +84,44 @@ export async function verifyWebhook(options: VerifyWebhookOptions): Promise<Thre
     throw new ThreetoneError('payload must be a string (the raw request body)');
   }
 
-  const parsed = parseSignatureHeader(signature, allowBareHex);
+  const digest = parseSignatureHeader(signature);
+  const expected = await hmacSha256Hex(secret, payload);
 
-  if (parsed.timestamp !== undefined) {
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (Math.abs(nowSec - parsed.timestamp) > toleranceSec) {
-      throw new ThreetoneError('Webhook timestamp outside tolerance window');
-    }
-  }
-
-  const signedPayload = parsed.timestamp !== undefined ? `${parsed.timestamp}.${payload}` : payload;
-  const expected = await hmacSha256Hex(secret, signedPayload);
-
-  if (!timingSafeEqualHex(expected, parsed.digest)) {
+  if (!timingSafeEqualHex(expected, digest)) {
     throw new ThreetoneError('Webhook signature mismatch');
   }
 
-  let event: ThreetoneEvent;
+  let event: unknown;
   try {
-    event = JSON.parse(payload) as ThreetoneEvent;
+    event = JSON.parse(payload);
   } catch (err) {
     throw new ThreetoneError('Webhook payload is not valid JSON', { cause: err });
   }
-  if (typeof event !== 'object' || event === null || typeof event.type !== 'string') {
-    throw new ThreetoneError('Webhook payload missing required `type` field');
+  if (typeof event !== 'object' || event === null) {
+    throw new ThreetoneError('Webhook payload must be a JSON object');
   }
-  return event;
+  const e = event as Record<string, unknown>;
+  if (typeof e.event !== 'string') {
+    throw new ThreetoneError('Webhook payload missing required `event` field (string)');
+  }
+  if ('timestamp' in e && typeof e.timestamp !== 'string') {
+    throw new ThreetoneError('Webhook payload `timestamp` must be a string when present');
+  }
+  return event as ThreetoneEvent;
 }
 
-interface ParsedSignature {
-  timestamp: number | undefined;
-  digest: string;
-}
-
-function parseSignatureHeader(header: string, allowBareHex: boolean): ParsedSignature {
+function parseSignatureHeader(header: string): string {
   const trimmed = header.trim();
-  // Stripe-style "t=...,v1=..." header.
-  if (trimmed.includes('=') && trimmed.includes(',')) {
-    let timestamp: number | undefined;
-    let digest: string | undefined;
-    for (const part of trimmed.split(',')) {
-      const eq = part.indexOf('=');
-      if (eq < 0) continue;
-      const key = part.slice(0, eq).trim();
-      const value = part.slice(eq + 1).trim();
-      if (!key || !value) continue;
-      if (key === 't') {
-        if (!/^\d+$/.test(value)) {
-          throw new ThreetoneError('Webhook signature: timestamp `t` must be an integer');
-        }
-        timestamp = Number(value);
-        if (!Number.isFinite(timestamp) || timestamp < 0) {
-          throw new ThreetoneError('Webhook signature: timestamp `t` must be non-negative');
-        }
-      } else if (key === 'v1') {
-        digest = value.toLowerCase();
-      }
-    }
-    if (timestamp === undefined || digest === undefined) {
-      throw new ThreetoneError('Webhook signature: header must include both `t` and `v1`');
-    }
-    if (digest.length !== SHA256_HEX_LEN || !HEX_RE.test(digest)) {
-      throw new ThreetoneError('Webhook signature: `v1` must be a 64-char hex SHA-256 digest');
-    }
-    return { timestamp, digest };
-  }
-  // Bare hex digest (opt-in, no replay protection).
-  if (!allowBareHex) {
+  if (!trimmed.toLowerCase().startsWith(SIGNATURE_PREFIX)) {
     throw new ThreetoneError(
-      'Webhook signature: header must be `t=...,v1=...`. Pass `allowBareHex: true` to accept bare digests.',
+      'Webhook signature header must start with `sha256=` (per Threetone signing scheme)',
     );
   }
-  const digest = trimmed.toLowerCase();
+  const digest = trimmed.slice(SIGNATURE_PREFIX.length).trim().toLowerCase();
   if (digest.length !== SHA256_HEX_LEN || !HEX_RE.test(digest)) {
-    throw new ThreetoneError('Webhook signature: bare digest must be a 64-char hex SHA-256');
+    throw new ThreetoneError('Webhook signature digest must be 64 hex characters (SHA-256)');
   }
-  return { timestamp: undefined, digest };
+  return digest;
 }
 
 async function hmacSha256Hex(secret: string, data: string): Promise<string> {

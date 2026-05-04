@@ -9,4 +9,10 @@ export {
   type ThreetoneErrorOptions,
 } from './errors.js';
 export { type RetryOptions, defaultRetryOptions } from './retry.js';
-export { verifyWebhook, type ThreetoneEvent, type VerifyWebhookOptions } from './webhooks.js';
+export {
+  verifyWebhook,
+  type ThreetoneEvent,
+  type ThreetoneEventName,
+  type ThreetoneKnownEventName,
+  type VerifyWebhookOptions,
+} from './webhooks.js';
