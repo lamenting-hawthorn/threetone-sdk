@@ -7,7 +7,7 @@
   "homepage": "https://threetone.in",
   "repository": {
     "type": "git",
-    "url": "https://github.com/threetone-labs/sdk.git"
+    "url": "https://github.com/lamenting-hawthorn/threetone-sdk.git"
   },
   "type": "module",
   "main": "./dist/index.js",
