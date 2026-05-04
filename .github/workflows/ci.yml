@@ -21,4 +21,4 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test
-      - run: pnpm exec attw --pack
+      - run: pnpm exec attw --pack --profile esm-only
