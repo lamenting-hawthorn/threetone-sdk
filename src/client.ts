@@ -1,12 +1,25 @@
-import { defaultRetryOptions, type RetryOptions, computeBackoffMs, shouldRetry, sleep } from './retry.js';
-import { errorFromResponse, ThreetoneError } from './errors.js';
+import { ThreetoneError, errorFromResponse } from './errors.js';
+import {
+  type RetryOptions,
+  computeBackoffMs,
+  defaultRetryOptions,
+  isIdempotent,
+  shouldRetry,
+  sleep,
+} from './retry.js';
 
 export interface ThreetoneClientOptions {
+  /** API key from the Threetone dashboard. Sent as `Authorization: Bearer` and `xi-api-key`. */
   apiKey: string;
+  /** Defaults to https://api.threetone.in. No trailing slash required. */
   baseUrl?: string;
+  /** Custom fetch implementation. Defaults to `globalThis.fetch` (resolved lazily). */
   fetch?: typeof fetch;
+  /** Per-request timeout in ms. Default 30_000. */
   timeoutMs?: number;
+  /** Retry policy. */
   retry?: Partial<RetryOptions>;
+  /** Headers merged into every request. Cannot override `Authorization` or `xi-api-key`. */
   defaultHeaders?: Record<string, string>;
 }
 
@@ -15,52 +28,52 @@ export const DEFAULT_BASE_URL = 'https://api.threetone.in';
 export class ThreetoneClient {
   readonly baseUrl: string;
   readonly #apiKey: string;
-  readonly #fetch: typeof fetch;
+  readonly #fetch: typeof fetch | undefined;
   readonly #timeoutMs: number;
   readonly #retry: RetryOptions;
   readonly #defaultHeaders: Record<string, string>;
 
   constructor(options: ThreetoneClientOptions) {
-    if (!options.apiKey) throw new ThreetoneError('apiKey is required');
-    this.#apiKey = options.apiKey;
+    const apiKey = options.apiKey?.trim();
+    if (!apiKey) throw new ThreetoneError('apiKey is required');
+    if (/[\r\n]/.test(apiKey)) {
+      throw new ThreetoneError('apiKey must not contain CR or LF characters');
+    }
+    this.#apiKey = apiKey;
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
-    this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.#fetch = options.fetch;
     this.#timeoutMs = options.timeoutMs ?? 30_000;
     this.#retry = { ...defaultRetryOptions, ...options.retry };
     this.#defaultHeaders = options.defaultHeaders ?? {};
   }
 
   /**
-   * Low-level request helper. The generated SDK functions call into this via
-   * the configured Hey API client; users typically don't call this directly.
+   * Low-level request helper. Generated SDK functions call into this; users typically
+   * don't call this directly once the ergonomic wrapper layer ships.
+   *
+   * @internal
    */
-  async request(
-    path: string,
-    init: RequestInit & { method: string } = { method: 'GET' },
-  ): Promise<Response> {
+  async request(path: string, init: RequestInit = {}): Promise<Response> {
+    const method = (init.method ?? 'GET').toUpperCase();
     const url = path.startsWith('http') ? path : `${this.baseUrl}${path}`;
-    const headers = new Headers(init.headers);
-    headers.set('Authorization', `Bearer ${this.#apiKey}`);
-    headers.set('xi-api-key', this.#apiKey);
-    if (!headers.has('Accept')) headers.set('Accept', 'application/json');
-    for (const [k, v] of Object.entries(this.#defaultHeaders)) {
-      if (!headers.has(k)) headers.set(k, v);
-    }
+    const baseHeaders = this.#buildHeaders(init.headers);
+    const userSignal = init.signal ?? undefined;
+
+    if (userSignal?.aborted) throw userSignal.reason;
 
     let lastError: unknown;
     for (let attempt = 0; attempt <= this.#retry.maxRetries; attempt++) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
-      const userSignal = init.signal ?? undefined;
-      if (userSignal) {
-        if (userSignal.aborted) controller.abort(userSignal.reason);
-        else userSignal.addEventListener('abort', () => controller.abort(userSignal.reason), { once: true });
-      }
+      const { signal, cleanup, didTimeOut } = this.#linkAbort(userSignal);
 
       try {
-        const response = await this.#fetch(url, { ...init, headers, signal: controller.signal });
+        const response = await this.#doFetch(url, {
+          ...init,
+          method,
+          headers: baseHeaders,
+          signal,
+        });
         if (response.ok) return response;
-        if (attempt < this.#retry.maxRetries && shouldRetry(response.status, init.method)) {
+        if (attempt < this.#retry.maxRetries && shouldRetry(response.status, method)) {
           const delay = computeBackoffMs(attempt, response.headers.get('retry-after'), this.#retry);
           await sleep(delay, userSignal);
           continue;
@@ -70,28 +83,95 @@ export class ThreetoneClient {
       } catch (err) {
         lastError = err;
         if (err instanceof ThreetoneError) throw err;
-        if (attempt >= this.#retry.maxRetries) break;
-        const delay = computeBackoffMs(attempt, null, this.#retry);
-        await sleep(delay, userSignal);
+        if (userSignal?.aborted) throw err;
+        const isTimeout = didTimeOut();
+        // Network errors (and our own timeout) are only safe to retry on idempotent methods.
+        if (
+          attempt < this.#retry.maxRetries &&
+          isIdempotent(method) &&
+          (isTimeout || isNetworkError(err))
+        ) {
+          await sleep(computeBackoffMs(attempt, null, this.#retry), userSignal);
+          continue;
+        }
+        throw err;
       } finally {
-        clearTimeout(timer);
+        cleanup();
       }
     }
     throw lastError instanceof Error
       ? lastError
       : new ThreetoneError('Request failed', { cause: lastError });
   }
+
+  #buildHeaders(input: HeadersInit | undefined): Headers {
+    const h = new Headers(input);
+    for (const [k, v] of Object.entries(this.#defaultHeaders)) {
+      if (!h.has(k)) h.set(k, v);
+    }
+    h.set('Authorization', `Bearer ${this.#apiKey}`);
+    h.set('xi-api-key', this.#apiKey);
+    if (!h.has('Accept')) h.set('Accept', 'application/json');
+    return h;
+  }
+
+  #doFetch(url: string, init: RequestInit): Promise<Response> {
+    const fn = this.#fetch ?? globalThis.fetch;
+    return fn(url, init);
+  }
+
+  #linkAbort(userSignal: AbortSignal | undefined): {
+    signal: AbortSignal;
+    cleanup: () => void;
+    didTimeOut: () => boolean;
+  } {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort(new ThreetoneError(`Request timed out after ${this.#timeoutMs}ms`));
+    }, this.#timeoutMs);
+
+    let onAbort: (() => void) | undefined;
+    if (userSignal) {
+      if (userSignal.aborted) {
+        controller.abort(userSignal.reason);
+      } else {
+        onAbort = () => controller.abort(userSignal.reason);
+        userSignal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
+
+    return {
+      signal: controller.signal,
+      didTimeOut: () => timedOut,
+      cleanup: () => {
+        clearTimeout(timer);
+        if (userSignal && onAbort) userSignal.removeEventListener('abort', onAbort);
+      },
+    };
+  }
+}
+
+function isNetworkError(err: unknown): boolean {
+  if (err instanceof TypeError) return true;
+  // DOMException with name 'AbortError' is handled by the user-signal check upstream.
+  return false;
 }
 
 async function safeJson(response: Response): Promise<unknown> {
   try {
     const text = await response.text();
     if (!text) return undefined;
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
     }
+    return text;
   } catch {
     return undefined;
   }

@@ -23,15 +23,28 @@
       "import": "./dist/webhooks.js"
     }
   },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["dist", "README.md", "LICENSE"],
   "engines": {
     "node": ">=20"
   },
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "keywords": [
+    "threetone",
+    "voice-ai",
+    "voice-agent",
+    "indic-languages",
+    "outbound-calling",
+    "conversational-ai",
+    "sdk",
+    "typescript"
+  ],
+  "bugs": {
+    "url": "https://github.com/lamenting-hawthorn/threetone-sdk/issues"
+  },
   "scripts": {
     "generate": "openapi-ts",
     "build": "pnpm generate && tsup",
@@ -41,7 +54,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "prepublishOnly": "pnpm build && pnpm test"
+    "prepublishOnly": "pnpm lint && pnpm typecheck && pnpm build && pnpm test"
   },
   "dependencies": {
     "@hey-api/client-fetch": "^0.10.0"

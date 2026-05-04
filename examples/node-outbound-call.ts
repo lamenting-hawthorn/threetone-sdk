@@ -6,7 +6,11 @@
 import { ThreetoneClient } from '../src/index.js';
 
 const client = new ThreetoneClient({
-  apiKey: process.env.THREETONE_API_KEY ?? (() => { throw new Error('Set THREETONE_API_KEY'); })(),
+  apiKey:
+    process.env.THREETONE_API_KEY ??
+    (() => {
+      throw new Error('Set THREETONE_API_KEY');
+    })(),
 });
 
 const res = await client.request('/v1/voiceai/outbound-call', {
