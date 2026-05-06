@@ -1,3 +1,5 @@
+import { ThreetoneError } from '../errors.js';
+
 export interface RequestOptions {
   signal?: AbortSignal;
 }
@@ -39,14 +41,38 @@ export function jsonInit(
   };
 }
 
+const MAX_BODY_SNIPPET = 4096;
+
+function trimSnippet(text: string): string {
+  return text.length > MAX_BODY_SNIPPET ? `${text.slice(0, MAX_BODY_SNIPPET)}…` : text;
+}
+
+function invalidJsonError(response: Response, text: string, cause: unknown): ThreetoneError {
+  return new ThreetoneError('Invalid JSON in response', {
+    status: response.status,
+    requestId: response.headers.get('x-request-id') ?? undefined,
+    body: trimSnippet(text),
+    cause,
+  });
+}
+
 export async function parseJson<T>(response: Response): Promise<T> {
-  return (await response.json()) as T;
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    throw invalidJsonError(response, text, err);
+  }
 }
 
 export async function parseOptionalJson<T>(response: Response): Promise<T | undefined> {
   const text = await response.text();
   if (!text) return undefined;
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    throw invalidJsonError(response, text, err);
+  }
 }
 
 export function toPage<T>(

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ThreetoneCallError, ThreetoneClient } from '../src/index.js';
+import { ThreetoneCallError, ThreetoneClient, ThreetoneError } from '../src/index.js';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -260,6 +260,26 @@ describe('namespace helpers', () => {
     await expect(client.phoneNumbers.inventory()).resolves.toEqual({
       countries: [],
       currency: 'USD',
+    });
+  });
+
+  it('wraps malformed JSON 2xx bodies in ThreetoneError instead of SyntaxError', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('<html>oops</html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html', 'x-request-id': 'req_html' },
+      }),
+    );
+    const client = new ThreetoneClient({ apiKey: 'k', fetch: fetchMock });
+
+    await expect(client.agents.get('agt_123')).rejects.toSatisfy((err: unknown) => {
+      return (
+        err instanceof ThreetoneError &&
+        err.message === 'Invalid JSON in response' &&
+        err.status === 200 &&
+        err.requestId === 'req_html' &&
+        err.body === '<html>oops</html>'
+      );
     });
   });
 });
