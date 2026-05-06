@@ -149,6 +149,12 @@ Nested types (`OutboundCallRecipient`, `ConversationalConfigApiModelInput`, `Age
 type Recipient = Parameters<typeof client.batch.create>[0]['recipients'][number];
 ```
 
+### Null vs undefined in optional fields
+
+When a request param accepts `T | null` (e.g. `CreateAgentParams.platformSettings`), passing `null` is equivalent to omitting the field — the SDK strips top-level `null` values from request bodies before sending. This is safer than the alternative because the API does not consistently accept literal `null` for optional fields.
+
+If you need to clear a server-side field via PATCH (i.e. send literal `null` deliberately), use `client.agents.update(id, patch)` and pass the raw `AgentPatchRequest` shape — that path goes through unchanged.
+
 ### Outbound calls
 
 ```ts

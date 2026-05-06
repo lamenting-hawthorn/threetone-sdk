@@ -270,6 +270,50 @@ describe('namespace helpers', () => {
     });
   });
 
+  it('strips null nested fields from agents.create and batch.create bodies', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { agent_id: 'agt_1' }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          id: 'batch_1',
+          name: 'b',
+          agent_id: 'agt_1',
+          status: 'pending',
+          created_at_unix: 1,
+          scheduled_time_unix: 2,
+          last_updated_at_unix: 3,
+          agent_name: 'a',
+        }),
+      );
+    const client = new ThreetoneClient({ apiKey: 'k', fetch: fetchMock });
+
+    await client.agents.create({
+      conversationConfig: { language: 'hi' },
+      name: null,
+      tags: null,
+      platformSettings: null,
+      workflow: null,
+    });
+    expect(bodyJson(fetchMock.mock.calls[0]?.[1] as RequestInit)).toEqual({
+      conversation_config: { language: 'hi' },
+    });
+
+    await client.batch.create({
+      callName: 'b',
+      agentId: 'agt_1',
+      recipients: [{ phone_number: '+91' }],
+      scheduledTimeUnix: null,
+      agentPhoneNumberId: null,
+      whatsappParams: null,
+    });
+    expect(bodyJson(fetchMock.mock.calls[1]?.[1] as RequestInit)).toEqual({
+      call_name: 'b',
+      agent_id: 'agt_1',
+      recipients: [{ phone_number: '+91' }],
+    });
+  });
+
   it('surfaces 404 from agents.get as ThreetoneNotFoundError with requestId', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: 'Agent not found' }), {
