@@ -1,5 +1,21 @@
 import { ThreetoneError, errorFromResponse } from './errors.js';
 import {
+  type AgentsNamespace,
+  type BatchNamespace,
+  type CallsNamespace,
+  type ConversationsNamespace,
+  type KnowledgeBaseNamespace,
+  type PhoneNumbersNamespace,
+  type VoicesNamespace,
+  createAgentsNamespace,
+  createBatchNamespace,
+  createCallsNamespace,
+  createConversationsNamespace,
+  createKnowledgeBaseNamespace,
+  createPhoneNumbersNamespace,
+  createVoicesNamespace,
+} from './namespaces/index.js';
+import {
   type RetryOptions,
   computeBackoffMs,
   defaultRetryOptions,
@@ -33,6 +49,21 @@ export const DEFAULT_BASE_URL = 'https://api.threetone.in';
 
 export class ThreetoneClient {
   readonly baseUrl: string;
+  /** Outbound call helpers. */
+  readonly calls: CallsNamespace;
+  /** Conversation history helpers. Outbound calls are returned as conversations. */
+  readonly conversations: ConversationsNamespace;
+  /** Agent CRUD helpers. */
+  readonly agents: AgentsNamespace;
+  /** Batch calling helpers. */
+  readonly batch: BatchNamespace;
+  /** Workspace knowledge-base document helpers. */
+  readonly knowledgeBase: KnowledgeBaseNamespace;
+  /** Voice catalog helpers. */
+  readonly voices: VoicesNamespace;
+  /** Phone-number pricing inventory helpers. */
+  readonly phoneNumbers: PhoneNumbersNamespace;
+
   readonly #apiKey: string;
   readonly #fetch: typeof fetch | undefined;
   readonly #timeoutMs: number;
@@ -51,6 +82,14 @@ export class ThreetoneClient {
     this.#timeoutMs = options.timeoutMs ?? 30_000;
     this.#retry = { ...defaultRetryOptions, ...options.retry };
     this.#defaultHeaders = options.defaultHeaders ?? {};
+    const request = this.request.bind(this);
+    this.calls = createCallsNamespace(request);
+    this.conversations = createConversationsNamespace(request);
+    this.agents = createAgentsNamespace(request);
+    this.batch = createBatchNamespace(request);
+    this.knowledgeBase = createKnowledgeBaseNamespace(request);
+    this.voices = createVoicesNamespace(request);
+    this.phoneNumbers = createPhoneNumbersNamespace(request);
   }
 
   /**
