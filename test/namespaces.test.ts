@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ThreetoneCallError, ThreetoneClient, ThreetoneError } from '../src/index.js';
+import {
+  ThreetoneCallError,
+  ThreetoneClient,
+  ThreetoneError,
+  ThreetoneNotFoundError,
+  ThreetoneRateLimitError,
+  ThreetoneValidationError,
+} from '../src/index.js';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -261,6 +268,87 @@ describe('namespace helpers', () => {
       countries: [],
       currency: 'USD',
     });
+  });
+
+  it('surfaces 404 from agents.get as ThreetoneNotFoundError with requestId', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Agent not found' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json', 'x-request-id': 'req_404' },
+      }),
+    );
+    const client = new ThreetoneClient({
+      apiKey: 'k',
+      fetch: fetchMock,
+      retry: { maxRetries: 0 },
+    });
+
+    await expect(client.agents.get('agt_missing')).rejects.toSatisfy((err: unknown) => {
+      return (
+        err instanceof ThreetoneNotFoundError &&
+        err.status === 404 &&
+        err.requestId === 'req_404' &&
+        err.message === 'Agent not found'
+      );
+    });
+  });
+
+  it('surfaces 422 from agents.create as ThreetoneValidationError with detail message', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'conversation_config is required' }), {
+        status: 422,
+        headers: { 'content-type': 'application/json', 'x-request-id': 'req_422' },
+      }),
+    );
+    const client = new ThreetoneClient({
+      apiKey: 'k',
+      fetch: fetchMock,
+      retry: { maxRetries: 0 },
+    });
+
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately invalid input for the test
+      client.agents.create({ conversationConfig: undefined as any }),
+    ).rejects.toSatisfy((err: unknown) => {
+      return (
+        err instanceof ThreetoneValidationError &&
+        err.status === 422 &&
+        err.message === 'conversation_config is required'
+      );
+    });
+  });
+
+  it('surfaces 429 from conversations.list as ThreetoneRateLimitError with retryAfterMs', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'slow down' }), {
+        status: 429,
+        headers: {
+          'content-type': 'application/json',
+          'retry-after': '2',
+          'x-request-id': 'req_429',
+        },
+      }),
+    );
+    const client = new ThreetoneClient({
+      apiKey: 'k',
+      fetch: fetchMock,
+      retry: { maxRetries: 0 },
+    });
+
+    await expect(client.conversations.list()).rejects.toSatisfy((err: unknown) => {
+      return (
+        err instanceof ThreetoneRateLimitError && err.status === 429 && err.retryAfterMs === 2000
+      );
+    });
+  });
+
+  it('agents.delete tolerates an empty 204 response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(emptyResponse());
+    const client = new ThreetoneClient({ apiKey: 'k', fetch: fetchMock });
+
+    await expect(client.agents.delete('agt_123')).resolves.toBeUndefined();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://api.threetone.in/v1/convai/agents/agt_123');
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).method).toBe('DELETE');
   });
 
   it('wraps malformed JSON 2xx bodies in ThreetoneError instead of SyntaxError', async () => {
