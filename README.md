@@ -38,10 +38,11 @@ The Threetone REST API is documented as an OpenAPI 3.1 spec at `https://api.thre
 
 This SDK gives you:
 
-1. **Typed access to every endpoint** — generated automatically from the live OpenAPI spec via [Hey API](https://heyapi.dev). Request bodies, query params, and response shapes are all type-checked at compile time.
-2. **A configured `ThreetoneClient`** — handles `Authorization` headers, request timeouts, retry-with-backoff on 429/5xx, and structured error mapping.
-3. **Webhook signature verification** — hand-written using Web Crypto so it works in Node, Cloudflare Workers, Vercel Edge, Deno, Bun, and modern browsers without any Node-only imports.
-4. **One ESM build** — compact (~12 KB main + ~3 KB webhooks), tree-shakeable, no CJS, no transpilation surprises.
+1. **Typed namespace helpers** — `client.calls.outbound()`, `client.agents.list()`, `client.knowledgeBase.addText()`, and other methods for the common integration paths.
+2. **Generated API types** — request bodies, query params, and response shapes are generated automatically from the live OpenAPI spec via [Hey API](https://heyapi.dev).
+3. **A configured `ThreetoneClient`** — handles `Authorization` headers, request timeouts, retry-with-backoff on 429/5xx, and structured error mapping.
+4. **Webhook signature verification** — hand-written using Web Crypto so it works in Node, Cloudflare Workers, Vercel Edge, Deno, Bun, and modern browsers without any Node-only imports.
+5. **One ESM build** — tree-shakeable, no CJS, no transpilation surprises.
 
 **Out of scope for v1:** real-time WebSocket streaming during a live call. That ships in v2.
 
@@ -63,6 +64,14 @@ yarn add @threetone/sdk
 
 ## Quickstart
 
+Before placing an outbound call, copy these from the Threetone dashboard:
+
+- API key
+- Agent ID
+- Phone number ID for a provisioned number
+
+`/v1/phone-numbers/inventory` is a pricing catalog, not a list of your provisioned numbers.
+
 ```ts
 import { ThreetoneClient } from '@threetone/sdk';
 
@@ -70,20 +79,20 @@ const threetone = new ThreetoneClient({
   apiKey: process.env.THREETONE_API_KEY!,
 });
 
-// Initiate an outbound call
-const res = await threetone.request('/v1/voiceai/outbound-call', {
-  method: 'POST',
-  headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({
-    agent_id: 'agt_123',
-    to_number: '+919999999999',
-  }),
+const call = await threetone.calls.outbound({
+  agentId: 'agt_123',
+  phoneNumberId: 'pn_123',
+  toPhoneNumber: '+919999999999',
 });
-const data = await res.json();
-console.log(data);
+
+console.log(call.conversationId);
 ```
 
-> **Note:** v0.1.0 exposes the low-level `client.request()` only. Typed namespaces (`client.agents.list()`, `client.calls.outbound()`, etc.) ship in v0.2 — see [roadmap](#roadmap--whats-next).
+Calls are returned as conversations. Use the `conversationId` from `calls.outbound()` to fetch call status and details:
+
+```ts
+const conversation = await threetone.conversations.get(call.conversationId);
+```
 
 ---
 
@@ -118,75 +127,68 @@ new ThreetoneClient({
 
 ## API surface
 
-The Threetone API exposes ~50 endpoints. Below is the complete map, generated from the live OpenAPI spec. In v0.1.0 you call these via `client.request(path, init)`. Typed wrappers land in v0.2.
+The Threetone API exposes ~50 endpoints. v0.2 ships namespace helpers for the common integration paths and keeps `client.request(path, init)` available for lower-level access.
 
 ### Outbound calls
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/v1/voiceai/outbound-call` | Initiate an outbound call |
+```ts
+await client.calls.outbound({
+  agentId: 'agt_123',
+  phoneNumberId: 'pn_123',
+  toPhoneNumber: '+919999999999',
+});
+```
+
+Throws `ThreetoneCallError` when the API returns HTTP 200 with `success: false`.
 
 ### Agents (CRUD)
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/v1/convai/agents/create` | Create agent |
-| `GET` | `/v1/convai/agents` | List agents |
-| `GET` | `/v1/convai/agents/{agent_id}` | Get agent |
-| `PATCH` | `/v1/convai/agents/{agent_id}` | Update agent |
-| `DELETE` | `/v1/convai/agents/{agent_id}` | Delete agent |
-| `GET` | `/v1/convai/agents/{agent_id}/widget` | Get widget |
-| `POST` | `/v1/convai/agents/{agent_id}/avatar` | Upload widget avatar |
+```ts
+const agents = await client.agents.list({ limit: 20 });
+const agent = await client.agents.get('agt_123');
+await client.agents.create({
+  name: 'Support agent',
+  conversationConfig: { language: 'hi' },
+});
+await client.agents.update('agt_123', { name: 'Updated support agent' });
+await client.agents.delete('agt_123');
+```
 
 ### Conversations
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/v1/voiceai/conversations` | List conversations |
-| `GET` | `/v1/voiceai/conversations/export` | Export conversations as CSV |
-| `GET` | `/v1/voiceai/conversations/token` | Get conversation token |
-| `GET` | `/v1/voiceai/conversations/{conversation_id}` | Get conversation details |
-| `DELETE` | `/v1/voiceai/conversations/{conversation_id}` | Delete conversation |
-| `GET` | `/v1/voiceai/conversations/{conversation_id}/audio` | Download audio |
+```ts
+const page = await client.conversations.list({ agentId: 'agt_123', limit: 20 });
+const conversation = await client.conversations.get('conv_123');
+```
+
+List methods return `{ data, nextCursor, hasMore }`.
 
 ### Batch calling
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/v1/voiceai/batch-calling/submit` | Submit batch |
-| `GET` | `/v1/voiceai/batch-calling/workspace` | List workspace batches |
-| `GET` | `/v1/voiceai/batch-calling/{batch_id}` | Get batch |
-| `DELETE` | `/v1/voiceai/batch-calling/{batch_id}` | Delete batch |
-| `POST` | `/v1/voiceai/batch-calling/{batch_id}/cancel` | Cancel batch |
-| `POST` | `/v1/voiceai/batch-calling/{batch_id}/retry` | Retry batch |
+```ts
+const batch = await client.batch.create({
+  callName: 'Q2 followup',
+  agentId: 'agt_123',
+  recipients: [{ phone_number: '+919999999999' }],
+  agentPhoneNumberId: 'pn_123',
+});
+await client.batch.get(batch.id);
+await client.batch.cancel(batch.id);
+```
 
 ### Knowledge base
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/v1/voiceai/knowledge-base` | List documents |
-| `POST` | `/v1/voiceai/knowledge-base/url` | Create URL document |
-| `POST` | `/v1/voiceai/knowledge-base/text` | Create text document |
-| `POST` | `/v1/voiceai/knowledge-base/file` | Create file document |
-| `POST` | `/v1/voiceai/knowledge-base/folder` | Create folder |
-| `GET` | `/v1/voiceai/knowledge-base/{document_id}` | Get document |
-| `PATCH` | `/v1/voiceai/knowledge-base/{document_id}` | Update document |
-| `DELETE` | `/v1/voiceai/knowledge-base/{document_id}` | Delete document |
-| `GET` | `/v1/voiceai/knowledge-base/{document_id}/content` | Get document content |
-| `GET` | `/v1/voiceai/knowledge-base/{document_id}/source-file-url` | Get source-file URL |
-| `GET` | `/v1/voiceai/knowledge-base/{document_id}/size` | Get document size |
-| `GET` | `/v1/voiceai/knowledge-base/{document_id}/chunk/{chunk_id}` | Get chunk |
-| `GET` | `/v1/voiceai/knowledge-base/{document_id}/dependent-agents` | List dependent agents |
-| `POST` | `/v1/voiceai/knowledge-base/{document_id}/move` | Move to folder |
-| `POST` | `/v1/voiceai/knowledge-base/bulk-move` | Bulk move |
-| `GET` | `/v1/voiceai/knowledge-base/rag-index` | RAG index overview |
-| `POST` | `/v1/voiceai/knowledge-base/rag-index` | Compute RAG indexes (batch) |
-| `POST` | `/v1/voiceai/knowledge-base/{document_id}/rag-index` | Compute RAG index |
-| `GET` | `/v1/voiceai/knowledge-base/{document_id}/rag-index` | List RAG indexes |
-| `DELETE` | `/v1/voiceai/knowledge-base/{document_id}/rag-index/{rag_index_id}` | Delete RAG index |
-| `GET` | `/v1/voiceai/knowledge-base/summaries` | Get summaries by IDs |
+```ts
+const docs = await client.knowledgeBase.list({ limit: 20 });
+const doc = await client.knowledgeBase.get('doc_123');
+await client.knowledgeBase.addUrl({ url: 'https://docs.example.com' });
+await client.knowledgeBase.addText({ text: 'FAQ content', name: 'faq.txt' });
+await client.knowledgeBase.addFile({ file, name: 'manual.pdf' });
+```
 
 ### Tools
+
+Tools endpoints are available through `client.request()` in v0.2. Typed tool helpers are planned after the core calling and knowledge-base flows.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -199,16 +201,17 @@ The Threetone API exposes ~50 endpoints. Below is the complete map, generated fr
 
 ### Voices
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/v1/voices` | List available voices |
-| `GET` | `/v1/voices/{voice_id}` | Get voice |
+```ts
+const voices = await client.voices.list();
+```
 
 ### Phone numbers
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/v1/phone-numbers/inventory` | Get phone-number inventory |
+```ts
+const inventory = await client.phoneNumbers.inventory();
+```
+
+This returns the pricing inventory. It does not return the provisioned `phoneNumberId` required for outbound calls.
 
 > The full typed schema for every request and response lives in `src/generated/` (generated on `pnpm build` — not committed).
 
@@ -286,20 +289,30 @@ Every non-2xx response is mapped to a typed error class:
 | 400, 422 | `ThreetoneValidationError` |
 | 429 | `ThreetoneRateLimitError` (includes `retryAfterMs`) |
 | 5xx | `ThreetoneServerError` |
+| HTTP 200 + `success: false` from `calls.outbound()` | `ThreetoneCallError` |
 | Other | `ThreetoneError` (base class) |
 
 ```ts
 import {
   ThreetoneClient,
   ThreetoneAuthError,
+  ThreetoneCallError,
   ThreetoneRateLimitError,
 } from '@threetone/sdk';
 
+const client = new ThreetoneClient({ apiKey: process.env.THREETONE_API_KEY! });
+
 try {
-  await client.request('/v1/convai/agents');
+  await client.calls.outbound({
+    agentId: 'agt_123',
+    phoneNumberId: 'pn_123',
+    toPhoneNumber: '+919999999999',
+  });
 } catch (err) {
   if (err instanceof ThreetoneAuthError) {
     // Bad API key
+  } else if (err instanceof ThreetoneCallError) {
+    // API accepted the request but could not initiate the call
   } else if (err instanceof ThreetoneRateLimitError) {
     console.log('Retry after', err.retryAfterMs, 'ms');
   }
@@ -353,7 +366,8 @@ sdk/
 │   │   ├── sdk.gen.ts          #    one function per endpoint
 │   │   ├── types.gen.ts        #    request + response interfaces
 │   │   └── schemas.gen.ts      #    runtime JSON schemas
-│   ├── client.ts               # ✍️ ThreetoneClient: auth + retry + timeout + error mapping
+│   ├── client.ts               # ✍️ ThreetoneClient: auth + retry + timeout + namespaces
+│   ├── namespaces/             # ✍️ Ergonomic typed namespace helpers
 │   ├── errors.ts               # ✍️ Typed error hierarchy
 │   ├── retry.ts                # ✍️ Backoff/jitter logic
 │   ├── webhooks.ts             # ✍️ Web Crypto signature verifier
@@ -378,7 +392,7 @@ sdk/
 ### Design principles
 
 1. **Generate everything we can.** Endpoint signatures, request shapes, response shapes — all from the live OpenAPI spec. Zero ongoing maintenance cost as the API evolves; just `pnpm generate`.
-2. **Hand-write only what generation can't produce.** Auth wiring, retry logic, error mapping, webhook verification, ergonomic naming. ~250 LOC total.
+2. **Hand-write only what generation can't produce.** Auth wiring, retry logic, error mapping, webhook verification, and ergonomic naming.
 3. **One ESM build, Web Standards only.** No CJS, no Node-only APIs. Same artifact runs everywhere.
 4. **Public surface is controlled in `src/index.ts`.** Generated code is internal; we re-export only the types and the hand-written client. This lets us refactor generated output without breaking SemVer.
 
@@ -405,6 +419,7 @@ pnpm generate
 
 # Type-check
 pnpm typecheck
+pnpm test:types
 
 # Lint + format
 pnpm lint
@@ -488,21 +503,9 @@ pnpm test
 
 The codegen config may need minor tweaks — Hey API renamed a few plugin entries between 0.64 and 0.97. If anything breaks, the error usually points at `openapi-ts.config.ts`.
 
-### Step 6 — Add the ergonomic typed surface (1–2 hours)
+### Step 6 — Expand namespace coverage
 
-Replace `client.request('/v1/voiceai/outbound-call', ...)` with named, fully-typed methods:
-
-```ts
-// What we want users to write:
-await client.calls.initiateOutbound({ body: { agent_id, to_number } });
-await client.agents.list();
-await client.agents.get({ path: { agent_id } });
-await client.knowledgeBase.createUrl({ body: { url } });
-```
-
-Mechanically: in `src/client.ts`, import each generated SDK function from `src/generated/sdk.gen.ts`, bind them to a configured Hey API client instance, and group by tag (`agents`, `calls`, `conversations`, `knowledgeBase`, `tools`, `voices`, `phoneNumbers`, `batchCalling`).
-
-This is a v0.2 release.
+v0.2 includes the core calling, agent, conversation, batch, knowledge-base, voice, and phone-number inventory helpers. Next namespace candidates are tools, conversation export/audio download, knowledge-base update/delete/move/RAG helpers, and batch retry/list helpers.
 
 ### Step 7 — Add Changesets for versioning (15 min)
 

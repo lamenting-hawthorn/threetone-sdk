@@ -71,6 +71,13 @@ export class ThreetoneServerError extends ThreetoneError {
   }
 }
 
+export class ThreetoneCallError extends ThreetoneError {
+  constructor(message = 'Call initiation failed', opts: ThreetoneErrorOptions = {}) {
+    super(message, opts);
+    this.name = 'ThreetoneCallError';
+  }
+}
+
 const MAX_BODY_SNIPPET = 4096;
 
 function trimBodySnippet(body: unknown): unknown {

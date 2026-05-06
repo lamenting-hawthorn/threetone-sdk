@@ -6,8 +6,21 @@ export {
   ThreetoneRateLimitError,
   ThreetoneValidationError,
   ThreetoneServerError,
+  ThreetoneCallError,
   type ThreetoneErrorOptions,
 } from './errors.js';
+export type {
+  AgentsNamespace,
+  BatchNamespace,
+  CallsNamespace,
+  ConversationsNamespace,
+  KnowledgeBaseNamespace,
+  KnowledgeBaseDocument,
+  Page,
+  PhoneNumbersNamespace,
+  RequestOptions,
+  VoicesNamespace,
+} from './namespaces/index.js';
 export { type RetryOptions, defaultRetryOptions } from './retry.js';
 export {
   verifyWebhook,
