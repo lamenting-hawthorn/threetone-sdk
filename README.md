@@ -70,7 +70,7 @@ Before placing an outbound call, copy these from the Threetone dashboard:
 - Agent ID
 - Phone number ID for a provisioned number
 
-`/v1/phone-numbers/inventory` is a pricing catalog, not a list of your provisioned numbers.
+> **Note on phone numbers.** The Threetone API does not currently expose a "list provisioned numbers" endpoint. The only phone-number method on the SDK is `client.phoneNumbers.inventory()`, which returns the pricing catalog (numbers available to purchase, by country), not numbers you already own. Get your `phoneNumberId` from the dashboard.
 
 ```ts
 import { ThreetoneClient } from '@threetone/sdk';
