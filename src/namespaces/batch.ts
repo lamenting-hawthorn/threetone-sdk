@@ -72,9 +72,9 @@ export function createBatchNamespace(request: Requester): BatchNamespace {
         call_name: callName,
         agent_id: agentId,
         recipients,
-        ...(scheduledTimeUnix !== undefined ? { scheduled_time_unix: scheduledTimeUnix } : {}),
-        ...(agentPhoneNumberId !== undefined ? { agent_phone_number_id: agentPhoneNumberId } : {}),
-        ...(whatsappParams !== undefined ? { whatsapp_params: whatsappParams } : {}),
+        ...(scheduledTimeUnix != null ? { scheduled_time_unix: scheduledTimeUnix } : {}),
+        ...(agentPhoneNumberId != null ? { agent_phone_number_id: agentPhoneNumberId } : {}),
+        ...(whatsappParams != null ? { whatsapp_params: whatsappParams } : {}),
       };
       return parseJson<BatchCallResponse>(
         await request('/v1/voiceai/batch-calling/submit', jsonInit('POST', body, { signal })),

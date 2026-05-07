@@ -117,10 +117,10 @@ export function createAgentsNamespace(request: Requester): AgentsNamespace {
       const query = buildQuery({ enable_versioning: enableVersioning });
       const body: BodyCreateAgentV1ConvaiAgentsCreatePost = {
         conversation_config: conversationConfig,
-        ...(platformSettings !== undefined ? { platform_settings: platformSettings } : {}),
-        ...(workflow !== undefined ? { workflow } : {}),
-        ...(name !== undefined ? { name } : {}),
-        ...(tags !== undefined ? { tags } : {}),
+        ...(platformSettings != null ? { platform_settings: platformSettings } : {}),
+        ...(workflow != null ? { workflow } : {}),
+        ...(name != null ? { name } : {}),
+        ...(tags != null ? { tags } : {}),
       };
       return parseJson<CreateAgentResponseModel>(
         await request(`/v1/convai/agents/create${query}`, jsonInit('POST', body, { signal })),

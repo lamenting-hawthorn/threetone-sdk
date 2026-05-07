@@ -1,6 +1,6 @@
 {
   "name": "@threetone/sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Official TypeScript SDK for the Threetone Labs voice AI platform.",
   "license": "MIT",
   "author": "Threetone Labs",

@@ -70,7 +70,7 @@ Before placing an outbound call, copy these from the Threetone dashboard:
 - Agent ID
 - Phone number ID for a provisioned number
 
-`/v1/phone-numbers/inventory` is a pricing catalog, not a list of your provisioned numbers.
+> **Note on phone numbers.** The Threetone API does not currently expose a "list provisioned numbers" endpoint. The only phone-number method on the SDK is `client.phoneNumbers.inventory()`, which returns the pricing catalog (numbers available to purchase, by country), not numbers you already own. Get your `phoneNumberId` from the dashboard.
 
 ```ts
 import { ThreetoneClient } from '@threetone/sdk';
@@ -128,6 +128,32 @@ new ThreetoneClient({
 ## API surface
 
 The Threetone API exposes ~50 endpoints. v0.2 ships namespace helpers for the common integration paths and keeps `client.request(path, init)` available for lower-level access.
+
+### Naming conventions
+
+The SDK uses a deliberate two-layer naming scheme. Top-level namespace method parameters are camelCase, hand-designed for ergonomics. Nested objects (request bodies and response items) follow the API's snake_case shape, sourced directly from the generated types in `src/generated/`. This keeps the generated types as the single source of truth and avoids a brittle case-conversion layer.
+
+| Layer | Convention | Example |
+|---|---|---|
+| Top-level method parameters | camelCase | `outbound({ agentId, phoneNumberId, toPhoneNumber })` |
+| Nested request objects | snake_case (API shape) | `recipients: [{ phone_number }]`, `conversationConfig: { language }` |
+| Page wrappers | camelCase | `{ data, nextCursor, hasMore }` |
+| Page item shape | snake_case (API shape) | `{ agent_id, created_at_unix_secs }` |
+| `calls.outbound` response | camelCase | `{ conversationId, callSid }` |
+
+The `calls.outbound` response is the only response we transform to camelCase, because outbound calls are the most common entry point and the response is small and stable. Everything else returns the API's snake_case shape.
+
+Nested types (`OutboundCallRecipient`, `ConversationalConfigApiModelInput`, `AgentPatchRequest`, etc.) are inferred at the call site from the namespace method signatures, so your IDE will autocomplete them without any extra imports. They are not currently re-exported by name; if you need to alias one, narrow it from the parameter type:
+
+```ts
+type Recipient = Parameters<typeof client.batch.create>[0]['recipients'][number];
+```
+
+### Null vs undefined in optional fields
+
+When a request param accepts `T | null` (e.g. `CreateAgentParams.platformSettings`), passing `null` is equivalent to omitting the field — the SDK strips top-level `null` values from request bodies before sending. This is safer than the alternative because the API does not consistently accept literal `null` for optional fields.
+
+If you need to clear a server-side field via PATCH (i.e. send literal `null` deliberately), use `client.agents.update(id, patch)` and pass the raw `AgentPatchRequest` shape — that path goes through unchanged.
 
 ### Outbound calls
 
